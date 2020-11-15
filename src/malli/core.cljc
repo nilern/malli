@@ -83,7 +83,7 @@
   ([type data]
    (-fail! type nil data))
   ([type message data]
-   (throw (ex-info (or message (str type " " (pr-str data))) {:type type, :data data}))))
+   (throw (ex-info (str type " " (pr-str data) message) {:type type, :data data}))))
 
 (defn -check-children! [type properties children {:keys [min max] :as opts}]
   (if (or (and min (< (count children) min)) (and max (> (count children) max)))
