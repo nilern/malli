@@ -4,7 +4,7 @@
 
 (declare convert)
 
-(defn emit-config [config]
+(defn save! [config]
   (let [cfg-file (io/file ".clj-kondo" "configs" "malli" "config.edn")]
     (io/make-parents cfg-file)
     (spit cfg-file config)
@@ -49,6 +49,8 @@
 (defn linter-config [xs]
   (reduce
     (fn [acc {:keys [ns name arity args ret]}]
-      (assoc-in
-        acc [:linters :type-mismatch :namespaces ns name :arities arity]
-        {:args args, :ret ret})) {} xs))
+      (-> acc
+          (assoc-in
+            [:linters :type-mismatch :namespaces ns name :arities arity]
+            {:args args, :ret ret})))
+    {:lint-as {'malli.schema/defn 'schema.core/defn}} xs))
