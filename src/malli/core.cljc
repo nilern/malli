@@ -1022,13 +1022,13 @@
   ^{:type ::into-schema}
   (reify IntoSchema
     (-into-schema [_ properties children options]
-      (-check-children! :-> properties children {:min 0})
+      (-check-children! :=> properties children {:min 0})
       (let [children (map #(schema % options) children)
-            form (-create-form :-> properties (map -form children))]
+            form (-create-form :=> properties (map -form children))]
         ^{:type ::schema}
         (reify
           Schema
-          (-type [_] :->)
+          (-type [_] :=>)
           (-type-properties [_])
           (-validator [_] (-fail! ::not-implemented))
           (-explainer [_ path] (-fail! ::not-implemented))
@@ -1338,7 +1338,7 @@
    :re (-re-schema false)
    :fn (-fn-schema)
    :ref (-ref-schema)
-   :-> (-function-schema)
+   :=> (-function-schema)
    :schema (-schema-schema nil)
    ::schema (-schema-schema {:raw true})})
 
@@ -1349,3 +1349,21 @@
   (mr/registry (cond (identical? mr/type "default") (default-schemas)
                      (identical? mr/type "custom") (mr/custom-default-registry)
                      :else (-fail! ::invalid-registry.type {:type mr/type}))))
+
+;;
+;; function schemas
+;;
+
+(def ^:private =>schemas* (atom {}))
+(defn =>schemas [] @=>schemas*)
+
+(defmacro => [name value]
+  (let [name `'~(symbol (str name))
+        value (if-not (= :or (first value)) (conj [:or] value) value)]
+    `(swap! @#'=>schemas*
+            assoc-in
+            [(symbol (str *ns*)) ~name]
+            {:malli/fn true
+             :schema (schema ~value)
+             :ns *ns*
+             :name ~name})))

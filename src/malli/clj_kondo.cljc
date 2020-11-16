@@ -20,10 +20,10 @@
 (defn convert [x]
   ((get mappings (m/type x) (constantly :any)) x))
 
-(defn from-var [x]
-  (if-not (:malli/fn (meta x))
+(defn from [x]
+  (if-not (:malli/fn x)
     (m/-fail! ::invalid-target)
-    (let [{:keys [schema ns name]} (meta x)]
+    (let [{:keys [schema ns name]} x]
       (let [ns-name (-> ns str symbol)
             schema (m/schema schema)]
         (assert (= :or (m/type schema)))
@@ -42,9 +42,17 @@
                  :ret ret})))
           [] (m/children schema))))))
 
+(defn from-var [x] (from (meta x)))
+
+(defn from=> [ns]
+  (->> (m/=>schemas)
+       (keep (fn [[k v]] (if (= k (symbol (str ns))) (vals v))))
+       (mapcat identity)))
+
 (defn from-ns [ns]
   (->> ns (ns-publics) (vals) (filter #(-> % meta :malli/fn))
-       (reduce (fn [acc x] (into acc (from-var x))) [])))
+       (reduce (fn [acc x] (into acc (from-var x))) [])
+       (into (mapcat from (from=> ns)))))
 
 (defn linter-config [xs]
   (reduce
