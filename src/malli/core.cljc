@@ -1354,7 +1354,7 @@
 ;; function schemas
 ;;
 
-(def ^:private =>schemas* (atom {}))
+(defonce ^:private =>schemas* (atom {}))
 (defn =>schemas [] @=>schemas*)
 
 (defmacro => [name value]
@@ -1363,7 +1363,6 @@
     `(swap! @#'=>schemas*
             assoc-in
             [(symbol (str *ns*)) ~name]
-            {:malli/fn true
-             :schema (schema ~value)
+            {:schema (schema ~value)
              :ns *ns*
              :name ~name})))

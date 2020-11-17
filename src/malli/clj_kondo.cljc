@@ -123,44 +123,32 @@
        (spit cfg-file config)
        config)))
 
-(defn from [x]
-  (if-not (:malli/fn x)
-    (m/-fail! ::invalid-target)
-    (let [{:keys [schema ns name]} x]
-      (let [ns-name (-> ns str symbol)
-            schema (m/schema schema)]
-        (assert (= :or (m/type schema)))
-        (reduce
-          (fn [acc schema]
-            (let [[input return] (m/children schema)
-                  args (mapv transform (m/children input))
-                  ret (transform return)
-                  arity (count args)]
-              (conj
-                acc
-                {:ns ns-name
-                 :name name
-                 :arity arity
-                 :args args
-                 :ret ret})))
-          [] (m/children schema))))))
+(defn from [{:keys [schema ns name]}]
+  (let [ns-name (-> ns str symbol)
+        schema (m/schema schema)]
+    (assert (= :or (m/type schema)))
+    (reduce
+      (fn [acc schema]
+        (let [[input return] (m/children schema)
+              args (mapv transform (m/children input))
+              ret (transform return)
+              arity (count args)]
+          (conj acc {:ns ns-name
+                     :name name
+                     :arity arity
+                     :args args
+                     :ret ret}))) [] (m/children schema))))
 
-(defn from-var [x] (from (meta x)))
-
-(defn from=> [ns]
-  (->> (m/=>schemas)
-       (keep (fn [[k v]] (if (= k (symbol (str ns))) (vals v))))
-       (mapcat identity)))
-
-(defn from-ns [ns]
-  (->> ns (ns-publics) (vals) (filter #(-> % meta :malli/fn))
-       (reduce (fn [acc x] (into acc (from-var x))) [])
-       (into (mapcat from (from=> ns)))))
+(defn collect
+  ([] (collect nil))
+  ([ns]
+   (let [-collect (fn [k] (or (nil? ns) (= k (symbol (str ns)))))]
+     (->> (for [[k vs] (m/=>schemas) :when (-collect k) [_ v] vs v (from v)] v)))))
 
 (defn linter-config [xs]
   (reduce
     (fn [acc {:keys [ns name arity args ret]}]
       (assoc-in
-        acc [:linters :type-mismatch :namespaces ns name :arities arity]
+        acc [:linters :type-mismatch :namespaces (symbol (str ns)) name :arities arity]
         {:args args, :ret ret}))
     {:lint-as {'malli.schema/defn 'schema.core/defn}} xs))
