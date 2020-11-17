@@ -101,8 +101,7 @@
 (defmethod accept :union [_ schema _ options] (transform (m/deref schema) options))
 (defmethod accept :select-keys [_ schema _ options] (transform (m/deref schema) options))
 
-(defn- -walk [schema _ children options]
-  (accept (m/type schema) schema children options))
+(defn- -walk [schema _ children options] (accept (m/type schema) schema children options))
 
 (defn -transform [?schema options] (m/walk ?schema -walk options))
 
