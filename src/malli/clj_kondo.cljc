@@ -151,3 +151,7 @@
         acc [:linters :type-mismatch :namespaces (symbol (str ns)) name :arities arity]
         {:args args, :ret ret}))
     {:lint-as {'malli.schema/defn 'schema.core/defn}} xs))
+
+(defn emit! []
+  (-> (collect) (linter-config) (save!))
+  nil)
