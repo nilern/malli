@@ -24,3 +24,5 @@
    (->SchemaError path in schema value nil nil))
   ([path in schema value type]
    (->SchemaError path in schema value type nil)))
+
+(defn -error? [v] (instance? SchemaError v))

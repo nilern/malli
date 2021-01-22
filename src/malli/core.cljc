@@ -22,6 +22,10 @@
 (defprotocol Schema
   (-type [this] "returns type of the schema")
   (-type-properties [this] "returns schema type properties")
+  (-children-path-fold [this path]
+    "Returns a folding function (fn [f acc in x on-error] ...) over children
+    where f should be (fn [acc path in x on-error] ...).
+    `path` is the key path into the schema/its child and `in` is the key path into the value/its child.")
   (-validator [this] "returns a predicate function that checks if the schema is valid")
   (-explainer [this path] "returns a function of `x in acc -> maybe errors` to explain the errors for invalid values")
   (-transformer [this transformer method options]
@@ -302,6 +306,7 @@
             Schema
             (-type [_] type)
             (-type-properties [_] type-properties)
+            (-children-path-fold [_ _] (fn [_ acc _ _ _] acc))
             (-validator [_] validator)
             (-explainer [this path]
               (fn explain [x in acc]
@@ -337,15 +342,21 @@
     (-into-schema [_ properties children options]
       (-check-children! :and properties children {:min 1})
       (let [children (mapv #(schema % options) children)
-            form (-create-form :and properties (map -form children))]
+            form (-create-form :and properties (map -form children))
+            validators (into [] (comp (map -validator) (distinct)) children)]
         ^{:type ::schema}
         (reify
           Schema
           (-type [_] :and)
           (-type-properties [_])
-          (-validator [_]
-            (let [validators (distinct (map -validator children))]
-              (if (second validators) (apply every-pred validators) (first validators))))
+          (-children-path-fold [_ path]
+            (fn [f acc in x on-error]
+              (reduce-kv (fn [acc i valid?]
+                           (if (valid? x)
+                             (f acc (conj path i) in x on-error)
+                             (reduced acc)))
+                         acc validators)))
+          (-validator [_] (if (second validators) (apply every-pred validators) (first validators)))
           (-explainer [_ path]
             (let [explainers (mapv (fn [[i c]] (-explainer c (conj path i))) (map-indexed vector children))]
               (fn explain [x in acc] (reduce (fn [acc' explainer] (explainer x in acc')) acc explainers))))
@@ -370,15 +381,21 @@
     (-into-schema [_ properties children options]
       (-check-children! :or properties children {:min 1})
       (let [children (mapv #(schema % options) children)
-            form (-create-form :or properties (map -form children))]
+            form (-create-form :or properties (map -form children))
+            validators (into [] (comp (map -validator) (distinct)) children)]
         ^{:type ::schema}
         (reify
           Schema
           (-type [_] :or)
           (-type-properties [_])
-          (-validator [_]
-            (let [validators (distinct (map -validator children))]
-              (if (second validators) (fn [x] (boolean (some #(% x) validators))) (first validators))))
+          (-children-path-fold [_ path]
+            (fn [f acc in x on-error]
+              (reduce-kv (fn [acc i valid?]
+                           (if (valid? x)
+                             (reduced (f acc (conj path i) in x on-error))
+                             acc))
+                         acc validators)))
+          (-validator [_] (if (second validators) (fn [x] (boolean (some #(% x) validators))) (first validators)))
           (-explainer [_ path]
             (let [explainers (mapv (fn [[i c]] (-explainer c (conj path i))) (map-indexed vector children))]
               (fn explain [x in acc]
@@ -432,6 +449,7 @@
          (reify Schema
            (-type [_] ::val)
            (-type-properties [_])
+           (-children-path-fold [_ _] (fn [_ acc _ _ _] acc))
            (-validator [_] (-validator schema))
            (-explainer [_ path] (-explainer schema path))
            (-transformer [this transformer method options]
@@ -469,6 +487,27 @@
            Schema
            (-type [_] :map)
            (-type-properties [_])
+           (-children-path-fold [this path]
+             (fn [f acc in x on-error]
+               (if (map? x)
+                 (let [acc (reduce (fn [acc [k {:keys [optional]} _]]
+                                     (let [path (conj path k)
+                                           in (conj in k)]
+                                       (if-some [entry (find x k)]
+                                         (f acc path in (val entry) on-error)
+                                         (do
+                                           (when-not optional
+                                             (on-error path in this nil ::missing-key))
+                                           acc))))
+                                   acc children)]
+                   (reduce-kv (fn [_ k _]
+                                (when-not (contains? keyset k)
+                                  (on-error (conj path k) (conj in k) this nil ::extra-key)))
+                              nil x)
+                   acc)
+                 (do
+                   (on-error path in this x ::invalid-type)
+                   acc))))
            (-validator [_]
              (let [validators (cond-> (mapv
                                         (fn [[key {:keys [optional]} value]]
@@ -557,6 +596,18 @@
           Schema
           (-type [_] :map-of)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (let [kpath (conj path 0)
+                  vpath (conj path 1)]
+              (fn [f acc in x on-error]
+                (if (map? x)
+                  (reduce-kv (fn [acc k v]
+                               (let [in (conj in k)]
+                                 (-> acc (f kpath in k on-error) (f vpath in v on-error))))
+                             acc x)
+                  (do
+                    (on-error path in this x ::invalid-type)
+                    acc)))))
           (-validator [_]
             (let [key-valid? (-validator key-schema)
                   value-valid? (-validator value-schema)]
@@ -620,6 +671,17 @@
           Schema
           (-type [_] type)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (let [item-path (conj path 0)]
+              (fn [f acc in x on-error]
+                (cond
+                  (not (fpred x)) (do (on-error path in this x ::invalid-type) acc)
+                  (not (validate-limits x)) (do (on-error path in this x ::limits) acc)
+                  :else (let [size (count x)]
+                          (loop [acc acc, i 0, [x & xs] x]
+                            (if (< i size)
+                              (recur (f acc item-path (conj in (fin i x)) x on-error) (inc i) xs)
+                              acc)))))))
           (-validator [_]
             (let [validator (-validator schema)]
               (fn [x] (and (fpred x)
@@ -672,6 +734,12 @@
           Schema
           (-type [_] :tuple)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (fn [f acc in x on-error]
+              (cond
+                (not (vector? x)) (do (on-error path in this x ::invalid-type) acc)
+                (not= (count x) size) (do (on-error path in this x ::tuple-size) acc)
+                :else (reduce-kv (fn [acc i v] (f acc (conj path i) (conj in i) v on-error)) acc x))))
           (-validator [_]
             (let [validators (into (array-map) (map-indexed vector (mapv -validator children)))]
               (fn [x] (and (vector? x)
@@ -723,6 +791,11 @@
           Schema
           (-type [_] :enum)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (fn [_ acc in x on-error]
+              (when-not (contains? schema x)
+                (on-error (conj path 0) in this x))
+              acc))
           (-validator [_]
             (fn [x] (contains? schema x)))
           (-explainer [this path]
@@ -757,6 +830,14 @@
           Schema
           (-type [_] :re)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (fn [_ acc in x on-error]
+              (try
+                (when-not (re-find re x)
+                  (on-error path in this x))
+                (catch #?(:clj Exception, :cljs js/Error) e
+                  (on-error path in this x (:type (ex-data e)))))
+              acc))
           (-validator [_]
             (-safe-pred #(boolean (re-find re %))))
           (-explainer [this path]
@@ -795,6 +876,14 @@
           Schema
           (-type [_] :fn)
           (-type-properties [_])
+          (-children-path-fold [this path]
+            (fn [_ acc in x on-error]
+              (try
+                (when-not (f x)
+                  (on-error path in this x))
+                (catch #?(:clj Exception, :cljs js/Error) e
+                  (on-error path in this x (:type (ex-data e)))))
+              acc))
           (-validator [_]
             (fn [x] (try (f x) (catch #?(:clj Exception, :cljs js/Error) _ false))))
           (-explainer [this path]
@@ -832,6 +921,10 @@
           Schema
           (-type [_] :maybe)
           (-type-properties [_])
+          (-children-path-fold [_ path]
+            (let [child-path (conj path 0)]
+              (fn [f acc in x on-error]
+                (f acc child-path in x on-error))))
           (-validator [_]
             (let [validator' (-validator schema)]
               (fn [x] (or (nil? x) (validator' x)))))
@@ -868,7 +961,8 @@
              {:keys [children entries forms]} (-parse-entries children opts' options)
              form (-create-form type properties forms)
              dispatch (eval (:dispatch properties) options)
-             dispatch-map (->> (for [[k s] entries] [k s]) (into {}))]
+             dispatch-map (->> (for [[k s] entries] [k s]) (into {}))
+             ->path (if (keyword? dispatch) #(conj % dispatch) identity)]
          (when-not dispatch
            (-fail! ::missing-property {:key :dispatch}))
          ^{:type ::schema}
@@ -876,6 +970,15 @@
            Schema
            (-type [_] type)
            (-type-properties [_] (:type-properties opts'))
+           (-children-path-fold [this path]
+             (let [path (->path path)]
+               (fn [f acc in x on-error]
+                 (let [in (->path in)]
+                   (if (contains? dispatch-map (dispatch x))
+                     (f acc path in x on-error)
+                     (do
+                       (on-error path in this x ::invalid-dispatch-value)
+                       acc))))))
            (-validator [_]
              (let [validators (reduce-kv (fn [acc k s] (assoc acc k (-validator s))) {} dispatch-map)]
                (fn [x]
@@ -883,8 +986,7 @@
                    (validator x)
                    false))))
            (-explainer [this path]
-             (let [explainers (reduce (fn [acc [k s]] (assoc acc k (-explainer s (conj path k)))) {} entries)
-                   ->path (if (keyword? dispatch) #(conj % dispatch) identity)]
+             (let [explainers (reduce (fn [acc [k s]] (assoc acc k (-explainer s (conj path k)))) {} entries)]
                (fn [x in acc]
                  (if-let [explainer (explainers (dispatch x))]
                    (explainer x in acc)
